@@ -1,3 +1,8 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 #include "systemcalls.h"
 
 /**
@@ -16,8 +21,9 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
+    int result = system(cmd);
 
-    return true;
+    return result == 0 ? true : false;
 }
 
 /**
@@ -49,6 +55,7 @@ bool do_exec(int count, ...)
     // and may be removed
     command[count] = command[count];
 
+
 /*
  * TODO:
  *   Execute a system command by calling fork, execv(),
@@ -58,10 +65,19 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    pid_t pid = fork();
+    if (pid == 0) {
+        execv(command[0], command);
+	perror("execv failed");
+	exit(123);
+    }
+    int child_status;
+    waitpid(pid, &child_status, 0);
+    printf("\nChild exitted with: %d\n", child_status);
 
     va_end(args);
 
-    return true;
+    return child_status == 0 ? true : false;
 }
 
 /**
@@ -92,8 +108,22 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    pid_t pid = fork();
+    if (pid == 0) {
+        int fd = open(outputfile, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+
+        dup2(fd, 1);
+        close(fd);
+
+        execv(command[0], command);
+	perror("execv failed");
+	exit(123);
+    }
+    int child_status;
+    wait(&child_status);
+    printf("Child exitted with: %d", child_status);
 
     va_end(args);
 
-    return true;
+    return child_status == 0 ? true : false;
 }
