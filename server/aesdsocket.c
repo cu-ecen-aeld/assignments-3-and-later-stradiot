@@ -126,7 +126,7 @@ int main(int argc, char const* argv[])
         }
         char buff[1024] = { 0 };
         while(fgets(buff, sizeof(buff), file)){
-           send(sockfd_in, buff, strlen(buff) + 1, 0);
+           send(sockfd_in, buff, strlen(buff), 0);
         }
 
         free(line);
