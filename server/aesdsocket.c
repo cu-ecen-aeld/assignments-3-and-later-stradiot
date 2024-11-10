@@ -26,8 +26,13 @@ int main(int argc, char const* argv[])
     int sockfd, status, opt = 1;
     struct addrinfo hints;
     struct addrinfo* servinfo;
+    bool rundaemon = false;
 
     struct sigaction new_action = {.sa_handler = signal_handler};
+
+    if (argc > 1 && strcmp(argv[1], "-d") == 0){
+        rundaemon = true;
+    }
 
     if (sigaction(SIGTERM, &new_action, NULL) != 0){
         perror("sigterm");
@@ -65,20 +70,20 @@ int main(int argc, char const* argv[])
         exit(EXIT_FAILURE);
     }
 
+    if (rundaemon){
+        daemon(0, 0);
+    }
+
     if (listen(sockfd, 1) < 0){
         perror("listen");
 	exit(EXIT_FAILURE);
     }
 
     char* line = calloc(1, 1);
-    while (true){
+    while (!signal_caught){
         int sockfd_in; 
         struct sockaddr_in addr_client;
         socklen_t sockaddr_client_len = sizeof(addr_client);
-
-	if (signal_caught){
-	    break;
-	}
 
         if ((sockfd_in = accept(sockfd, (struct sockaddr*) &addr_client, &sockaddr_client_len)) < 0){
             perror("accept");
@@ -87,26 +92,24 @@ int main(int argc, char const* argv[])
 
         syslog(LOG_INFO, "Accepted connection from %s\n", inet_ntoa(addr_client.sin_addr));
 
-        char buffer[1024] = { 0 };
-        while (strchr(buffer, '\n') == NULL) {
-            memset(buffer, 0, sizeof(buffer));
-            recv(sockfd_in, buffer, sizeof(buffer - 1), 0);
-
-	    char tmp[strlen(line) + strlen(buffer) + 1];
-	    memset(tmp, 0, strlen(line) + strlen(buffer) + 1);
-	    strcat(tmp, line);
-	    strcat(tmp, buffer);
-
-	    line = realloc(line, strlen(line) + strlen(buffer) + 1);
-	    strcpy(line, tmp);
-        }
-
         FILE* file = fopen(TMPFILE, "a");
         if (file == NULL){
             perror("fileopen");
             exit(EXIT_FAILURE);
         }
-        fprintf(file, "%s", line);
+
+        char buffer[1024] = { 0 };
+	int bytes_received;
+        while ((bytes_received = recv(sockfd_in, buffer, sizeof(buffer) - 1, 0)) > 0) {
+            if (fwrite(buffer, sizeof(char), bytes_received, file) < 0){
+	        perror("write");
+		break;
+	    }
+	    if(strchr(buffer ,'\n') != NULL){
+	        break;
+	    }
+	}
+
         if (fclose(file) == EOF){
             perror("fileclose");
             exit(EXIT_FAILURE);
@@ -117,9 +120,10 @@ int main(int argc, char const* argv[])
             perror("fileopen");
             exit(EXIT_FAILURE);
         }
-        char buff[5] = { 0 };
-        while(fgets(buff, sizeof(buff), file)){
-           send(sockfd_in, buff, strlen(buff), 0);
+        char buff[1024] = { 0 };
+	int bytes_read;
+        while((bytes_read = fread(buff, sizeof(char), sizeof(buff), file)) > 0){
+            send(sockfd_in, buff, bytes_read, 0);
         }
         if (fclose(file) == EOF){
             perror("fileclose");
