@@ -16,6 +16,7 @@ bool signal_caught = false;
 
 static void signal_handler (int signal_number){
     if (signal_number == SIGINT || signal_number == SIGTERM){
+        syslog(LOG_INFO, "Caught signal, exiting");
 	signal_caught = true;
     }
 }
@@ -26,9 +27,7 @@ int main(int argc, char const* argv[])
     struct addrinfo hints;
     struct addrinfo* servinfo;
 
-    struct sigaction new_action;
-    memset(&new_action, 0, sizeof(sigaction));
-    new_action.sa_handler = signal_handler;
+    struct sigaction new_action = {.sa_handler = signal_handler};
 
     if (sigaction(SIGTERM, &new_action, NULL) != 0){
         perror("sigterm");
@@ -71,41 +70,35 @@ int main(int argc, char const* argv[])
 	exit(EXIT_FAILURE);
     }
 
+    char* line = calloc(1, 1);
     while (true){
         int sockfd_in; 
-        char buffer[1024] = { 0 };
-        char* line = NULL;
         struct sockaddr_in addr_client;
         socklen_t sockaddr_client_len = sizeof(addr_client);
 
 	if (signal_caught){
-            syslog(LOG_INFO, "Caught signal, exiting");
 	    break;
 	}
 
         if ((sockfd_in = accept(sockfd, (struct sockaddr*) &addr_client, &sockaddr_client_len)) < 0){
             perror("accept");
-            exit(EXIT_FAILURE);
+	    break;
         }
 
         syslog(LOG_INFO, "Accepted connection from %s\n", inet_ntoa(addr_client.sin_addr));
 
+        char buffer[1024] = { 0 };
         while (strchr(buffer, '\n') == NULL) {
             memset(buffer, 0, sizeof(buffer));
             recv(sockfd_in, buffer, sizeof(buffer - 1), 0);
 
-            if (line == NULL){
-                line = calloc(strlen(buffer) + 1, 1);
-                strcpy(line, buffer);
-            } else {
-                char tmp[strlen(line) + strlen(buffer) + 1];
-                memset(tmp, 0, strlen(line) + strlen(buffer) + 1);
-                strcat(tmp, line);
-                strcat(tmp, buffer);
+	    char tmp[strlen(line) + strlen(buffer) + 1];
+	    memset(tmp, 0, strlen(line) + strlen(buffer) + 1);
+	    strcat(tmp, line);
+	    strcat(tmp, buffer);
 
-                line = realloc(line, strlen(line) + strlen(buffer) + 1);
-                strcpy(line, tmp);
-            } 
+	    line = realloc(line, strlen(line) + strlen(buffer) + 1);
+	    strcpy(line, tmp);
         }
 
         FILE* file = fopen(TMPFILE, "a");
@@ -133,16 +126,15 @@ int main(int argc, char const* argv[])
             exit(EXIT_FAILURE);
         }
 
-        free(line);
+	line[0] = '\0';
 
         close(sockfd_in);
         syslog(LOG_INFO, "Closed connection from %s\n", inet_ntoa(addr_client.sin_addr));
     }
 
+    free(line);
     close(sockfd);
-
     freeaddrinfo(servinfo);
-
     closelog();
 
     remove(TMPFILE);
