@@ -92,7 +92,7 @@ int main(int argc, char const* argv[])
 
         while (strchr(buffer, '\n') == NULL) {
             memset(buffer, 0, sizeof(buffer));
-            recv(sockfd_in, buffer, sizeof(buffer), 0);
+            recv(sockfd_in, buffer, sizeof(buffer - 1), 0);
 
             if (line == NULL){
                 line = calloc(strlen(buffer) + 1, 1);
@@ -124,9 +124,13 @@ int main(int argc, char const* argv[])
             perror("fileopen");
             exit(EXIT_FAILURE);
         }
-        char buff[1024] = { 0 };
+        char buff[5] = { 0 };
         while(fgets(buff, sizeof(buff), file)){
            send(sockfd_in, buff, strlen(buff), 0);
+        }
+        if (fclose(file) == EOF){
+            perror("fileclose");
+            exit(EXIT_FAILURE);
         }
 
         free(line);
