@@ -1,13 +1,17 @@
 CC=$(CROSS_COMPILE)gcc
-CFLAGS= -Wall -Werror
+CFLAGS= -pthread -g -Wall -Werror
+OBJ=aesdsocket.o
+PROG=aesdsocket
 
-all: aesdsocket
+.PHONY: all clean
 
-default: aesdsocket
+all: $(OBJ) aesdsocket
 
-aesdsocket: aesdsocket.o
+$(PROG): $(OBJ)
+	$(CC) $(CFLAGS) $< -o $@
 
-.PHONY: clean
+%.o: %.c
+	$(CC) -c $(CFLAGS) $< -o $@
 
 clean:
 	rm -f ./*.o aesdsocket
