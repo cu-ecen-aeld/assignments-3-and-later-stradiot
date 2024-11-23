@@ -1,3 +1,4 @@
+#include <time.h>
 #include <pthread.h> 
 #include <errno.h>
 #include <signal.h>
@@ -18,7 +19,7 @@
 bool signal_caught = false;
 pthread_mutex_t lock;
 
-struct thread_data{
+struct conn_thread_data{
     pthread_mutex_t* mutex;
 	int sockfd_in; 
 	struct sockaddr_in addr_client;
@@ -29,7 +30,7 @@ struct thread_data{
 
 struct conn_thread{
 	pthread_t thread;
-	struct thread_data thread_data;
+	struct conn_thread_data thread_data;
 
 	SLIST_ENTRY(conn_thread) entries;
 };
@@ -41,10 +42,68 @@ static void signal_handler (int signal_number){
     }
 }
 
+struct timer_thread_data{
+    pthread_mutex_t* mutex;
+
+	bool thread_complete;
+    bool thread_complete_success;
+};
+
+void timer_thread(union sigval timer_data){
+    struct timer_thread_data* thread_args = timer_data.sival_ptr;
+
+	time_t rawtime;
+	struct tm *info;
+	char buffer[80];
+
+	time( &rawtime );
+	info = localtime( &rawtime );
+	strftime(buffer, sizeof(buffer),"%F %T", info);
+
+	FILE* file = fopen(TMPFILE, "a");
+	if (file == NULL){
+		syslog(LOG_ERR, "Error opening file for append: %s\n", strerror(errno));
+		thread_args->thread_complete = true;
+		thread_args->thread_complete_success = false;
+		return;
+	}
+
+	int rc;
+	rc = pthread_mutex_lock(thread_args->mutex);
+	if (rc != 0){
+		syslog(LOG_ERR, "Mutex lock failed to lock with %d\n", rc);
+		thread_args->thread_complete = true;
+		thread_args->thread_complete_success = false;
+		return;
+	}
+	if (fprintf(file, "timestamp:%s\n", buffer) < 0){
+		syslog(LOG_ERR, "Error writing to file: %s\n", strerror(errno));
+		thread_args->thread_complete = true;
+		thread_args->thread_complete_success = false;
+		return;
+	}
+	rc = pthread_mutex_unlock(thread_args->mutex);
+	if (rc != 0){
+		syslog(LOG_ERR, "Mutex unlock failed to lock with %d\n", rc);
+		thread_args->thread_complete = true;
+		thread_args->thread_complete_success = false;
+		return;
+	}
+	if (fclose(file) == EOF){
+		syslog(LOG_ERR, "Error closing the file: %s\n", strerror(errno));
+		thread_args->thread_complete = true;
+		thread_args->thread_complete_success = false;
+		return;
+	}
+
+	thread_args->thread_complete = true;
+	thread_args->thread_complete_success = true;
+}
+
 void* handle_conn(void* conn_data){
 	int rc;
 
-    struct thread_data* thread_args = (struct thread_data *) conn_data;
+    struct conn_thread_data* thread_args = (struct conn_thread_data *) conn_data;
 
 	FILE* file = fopen(TMPFILE, "a");
 	if (file == NULL){
@@ -142,7 +201,7 @@ int main(int argc, char const* argv[]){
 	SLIST_INIT(&threads_head);
 
     if (pthread_mutex_init(&lock, NULL) < 0) { 
-		perror("mutex init");
+		syslog(LOG_ERR, "Error initializing mutex: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
     } 
 
@@ -153,11 +212,11 @@ int main(int argc, char const* argv[]){
     }
 
     if (sigaction(SIGTERM, &new_action, NULL) != 0){
-        perror("sigterm");
+		syslog(LOG_ERR, "Error registering SIGTERM handler: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
     }
     if (sigaction(SIGINT, &new_action, NULL) != 0){
-        perror("sigint");
+		syslog(LOG_ERR, "Error registering SIGINT handler: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -169,22 +228,22 @@ int main(int argc, char const* argv[]){
     hints.ai_flags = AI_PASSIVE;
     
     if ((status = getaddrinfo(NULL, "9000", &hints, &servinfo)) != 0){
-        fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
+		syslog(LOG_ERR, "getaddrinfo error: %s\n", gai_strerror(status));
         exit(EXIT_FAILURE);
     }
 
     if ((sockfd = socket(servinfo->ai_family, servinfo->ai_socktype, servinfo->ai_protocol)) < 0){
-        perror("socket");
+		syslog(LOG_ERR, "Error opening socket: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
     }
 
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)) < 0) {
-        perror("setsockopt");
+		syslog(LOG_ERR, "setsockopt: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     if (bind(sockfd, servinfo->ai_addr, servinfo->ai_addrlen) < 0){
-        perror("bind");
+		syslog(LOG_ERR, "bind: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -193,9 +252,37 @@ int main(int argc, char const* argv[]){
     }
 
     if (listen(sockfd, 5) < 0){
-        perror("listen");
+		syslog(LOG_ERR, "listen: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
     }
+
+	struct timer_thread_data timer_data = {
+		.mutex = &lock,
+		.thread_complete = false,
+		.thread_complete_success = true
+	};
+
+	timer_t timer;
+	struct sigevent sev = {
+		.sigev_notify = SIGEV_THREAD,
+		.sigev_value.sival_ptr = &timer_data,
+		.sigev_notify_function = &timer_thread
+	};
+	struct itimerspec its = {
+	    .it_value.tv_sec  = 0,
+		.it_value.tv_nsec = 1,
+		.it_interval.tv_sec  = 10,
+		.it_interval.tv_nsec = 0
+	};
+
+	if (timer_create(CLOCK_MONOTONIC, &sev, &timer) != 0){
+		syslog(LOG_ERR, "Error creating timer: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	if(timer_settime(timer, 0, &its, NULL) != 0){
+		syslog(LOG_ERR, "Error starting timer: %s\n", strerror(errno));
+		exit(EXIT_FAILURE);
+	}
 
     while (!signal_caught){
         int sockfd_in; 
@@ -203,7 +290,7 @@ int main(int argc, char const* argv[]){
         socklen_t sockaddr_client_len = sizeof(addr_client);
 
         if ((sockfd_in = accept(sockfd, (struct sockaddr*) &addr_client, &sockaddr_client_len)) < 0){
-            perror("accept");
+			syslog(LOG_ERR, "accept: %s\n", strerror(errno));
 		    break;
         }
 
@@ -223,7 +310,7 @@ int main(int argc, char const* argv[]){
 
         syslog(LOG_INFO, "Accepted connection from %s\n", inet_ntoa(addr_client.sin_addr));
 
-		struct thread_data data = {
+		struct conn_thread_data data = {
 			.mutex = &lock,
 			.sockfd_in = sockfd_in,
 			.addr_client = addr_client,
@@ -248,6 +335,9 @@ int main(int argc, char const* argv[]){
 		SLIST_REMOVE_HEAD(&threads_head, entries);
 		free(tmp);
 	}
+
+	timer_delete(timer);
+	//pthread_join(timer_thread, NULL);
     pthread_mutex_destroy(&lock);
     close(sockfd);
     freeaddrinfo(servinfo);

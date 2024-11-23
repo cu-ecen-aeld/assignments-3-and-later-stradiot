@@ -8,7 +8,7 @@ PROG=aesdsocket
 all: $(OBJ) aesdsocket
 
 $(PROG): $(OBJ)
-	$(CC) $(CFLAGS) $< -o $@
+	$(CC) $(CFLAGS) $< -o $@ -lrt
 
 %.o: %.c
 	$(CC) -c $(CFLAGS) $< -o $@
