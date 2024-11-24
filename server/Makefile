@@ -6,7 +6,7 @@ TARGET?=aesdsocket
 
 .PHONY: all clean
 
-all: $(OBJ) aesdsocket
+all: $(OBJ) ${TARGET}
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
