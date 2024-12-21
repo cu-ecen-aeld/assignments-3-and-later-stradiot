@@ -1,4 +1,4 @@
-#include <stdio.h>
+//#include <stdio.h>
 /**
  * @file aesd-circular-buffer.c
  * @brief Functions and data related to a circular buffer imlementation
@@ -30,9 +30,9 @@
 struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct aesd_circular_buffer *buffer,
             size_t char_offset, size_t *entry_offset_byte_rtn )
 {
-	int curr_offset = 0;
+	int i, curr_offset = 0;
 
-	for (int i = buffer->out_offs; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED + buffer->out_offs; i++){
+	for (i = buffer->out_offs; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED + buffer->out_offs; i++){
 		int curr_index = i % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
 
 		if ((char_offset - curr_offset) < buffer->entry[curr_index].size){

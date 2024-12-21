@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/printk.h>
 #include <linux/types.h>
+#include <linux/slab.h>
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
 #include "aesdchar.h"
@@ -64,8 +65,25 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     /**
      * TODO: handle write
      */
+    struct aesd_dev *dev = filp->private_data;
+
+	dev->c_buffer_entry.buffptr = kmalloc(count, GFP_KERNEL);
+	dev->c_buffer_entry.size = count;
+    PDEBUG("entry initialized");
+
+	copy_from_user(dev->c_buffer_entry.buffptr, buf, count);
+    PDEBUG("copy_from_user");
+
+	aesd_circular_buffer_add_entry(&(dev->c_buffer), &(dev->c_buffer_entry));	
+    PDEBUG("entry added");
+
+	
+	struct aesd_buffer_entry entry = dev->c_buffer.entry[dev->c_buffer.out_offs];
+    PDEBUG("entry string %s size %zu", entry.buffptr, entry.size);
+ 
     return retval;
 }
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,
@@ -106,6 +124,7 @@ int aesd_init_module(void)
     /**
      * TODO: initialize the AESD specific portion of the device
      */
+    aesd_circular_buffer_init(&aesd_device.c_buffer);
 
     result = aesd_setup_cdev(&aesd_device);
 
