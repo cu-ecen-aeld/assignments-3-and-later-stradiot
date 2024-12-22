@@ -54,6 +54,24 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
     /**
      * TODO: handle read
      */
+    struct aesd_dev *dev = filp->private_data;
+
+	size_t unused;
+
+	struct aesd_buffer_entry* entry = aesd_circular_buffer_find_entry_offset_for_fpos(
+		&(dev->c_buffer),
+		*f_pos,
+		&unused
+	);
+
+	if (entry != NULL){
+		PDEBUG("found message %s, sizhb %zu, f_pos %lld", entry->buffptr, entry->size, *f_pos);
+		copy_to_user(buf, entry->buffptr, entry->size);
+		*f_pos += entry->size;
+		retval = entry->size;
+	}
+
+	PDEBUG("end retval %zu", retval);
     return retval;
 }
 
@@ -77,10 +95,13 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 	aesd_circular_buffer_add_entry(&(dev->c_buffer), &(dev->c_buffer_entry));	
     PDEBUG("entry added");
 
-	
+	retval = count;
+
+	// TODO: remove
 	struct aesd_buffer_entry entry = dev->c_buffer.entry[dev->c_buffer.out_offs];
     PDEBUG("entry string %s size %zu", entry.buffptr, entry.size);
  
+    PDEBUG("returning %zu", retval);
     return retval;
 }
 
