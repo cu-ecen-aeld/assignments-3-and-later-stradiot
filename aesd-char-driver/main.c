@@ -66,7 +66,9 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 
 	if (entry != NULL){
 		PDEBUG("found message %s, size %zu, f_pos %lld", entry->buffptr, entry->size, *f_pos);
-		copy_to_user(buf, entry->buffptr, entry->size);
+		if (copy_to_user(buf, entry->buffptr, entry->size)){
+			return -EINTR;
+		}
 		*f_pos += entry->size;
 		retval = entry->size;
 	}
@@ -87,6 +89,10 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 
     PDEBUG("init vals buffer %s size %zu",dev->c_buffer_entry.buffptr,dev->c_buffer_entry.size,*f_pos);
 
+	if (mutex_lock_interruptible(&dev->lock)){
+		return -ERESTARTSYS;
+	}
+
 	dev->c_buffer_entry.buffptr = krealloc(
 		dev->c_buffer_entry.buffptr,
 		dev->c_buffer_entry.size + count,
@@ -103,19 +109,20 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     PDEBUG("ACT buffer %s", dev->c_buffer_entry.buffptr);
 
 	if(strchr(dev->c_buffer_entry.buffptr, '\n') != NULL){
-		if (
-			dev->c_buffer.full && 
-			(dev->c_buffer.in_offs == dev->c_buffer.out_offs)
-		){
-			PDEBUG("Free mem for buffer entry %s", dev->c_buffer.entry[dev->c_buffer.out_offs].buffptr);
-			kfree(dev->c_buffer.entry[dev->c_buffer.out_offs].buffptr);
-		}
-		aesd_circular_buffer_add_entry(&(dev->c_buffer), &(dev->c_buffer_entry));	
+		const char* deleted_item = aesd_circular_buffer_add_entry(&(dev->c_buffer), &(dev->c_buffer_entry)); 
+
+		if (deleted_item != NULL){
+			PDEBUG("Deleted entry %s", deleted_item);
+			kfree(deleted_item);
+		}	
+
 		memset(&dev->c_buffer_entry, 0, sizeof(struct aesd_buffer_entry));
 		PDEBUG("entry added");
 	}
 
 	retval = count;
+
+	mutex_unlock(&dev->lock);
 
     PDEBUG("returning %zu", retval);
     return retval;
@@ -162,6 +169,7 @@ int aesd_init_module(void)
      * TODO: initialize the AESD specific portion of the device
      */
     aesd_circular_buffer_init(&aesd_device.c_buffer);
+	mutex_init(&aesd_device.lock);
 
     result = aesd_setup_cdev(&aesd_device);
 
