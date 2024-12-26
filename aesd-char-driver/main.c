@@ -65,7 +65,7 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 	);
 
 	if (entry != NULL){
-		PDEBUG("found message %s, sizhb %zu, f_pos %lld", entry->buffptr, entry->size, *f_pos);
+		PDEBUG("found message %s, size %zu, f_pos %lld", entry->buffptr, entry->size, *f_pos);
 		copy_to_user(buf, entry->buffptr, entry->size);
 		*f_pos += entry->size;
 		retval = entry->size;
@@ -85,22 +85,38 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
      */
     struct aesd_dev *dev = filp->private_data;
 
-	dev->c_buffer_entry.buffptr = kmalloc(count, GFP_KERNEL);
-	dev->c_buffer_entry.size = count;
-    PDEBUG("entry initialized");
+    PDEBUG("init vals buffer %s size %zu",dev->c_buffer_entry.buffptr,dev->c_buffer_entry.size,*f_pos);
 
-	copy_from_user(dev->c_buffer_entry.buffptr, buf, count);
-    PDEBUG("copy_from_user");
+	dev->c_buffer_entry.buffptr = krealloc(
+		dev->c_buffer_entry.buffptr,
+		dev->c_buffer_entry.size + count,
+		GFP_KERNEL
+	);
 
-	aesd_circular_buffer_add_entry(&(dev->c_buffer), &(dev->c_buffer_entry));	
-    PDEBUG("entry added");
+	copy_from_user(
+		dev->c_buffer_entry.buffptr + dev->c_buffer_entry.size,
+		buf,
+		count
+	);
+	dev->c_buffer_entry.size += count;
+
+    PDEBUG("ACT buffer %s", dev->c_buffer_entry.buffptr);
+
+	if(strchr(dev->c_buffer_entry.buffptr, '\n') != NULL){
+		if (
+			dev->c_buffer.full && 
+			(dev->c_buffer.in_offs == dev->c_buffer.out_offs)
+		){
+			PDEBUG("Free mem for buffer entry %s", dev->c_buffer.entry[dev->c_buffer.out_offs].buffptr);
+			kfree(dev->c_buffer.entry[dev->c_buffer.out_offs].buffptr);
+		}
+		aesd_circular_buffer_add_entry(&(dev->c_buffer), &(dev->c_buffer_entry));	
+		memset(&dev->c_buffer_entry, 0, sizeof(struct aesd_buffer_entry));
+		PDEBUG("entry added");
+	}
 
 	retval = count;
 
-	// TODO: remove
-	struct aesd_buffer_entry entry = dev->c_buffer.entry[dev->c_buffer.out_offs];
-    PDEBUG("entry string %s size %zu", entry.buffptr, entry.size);
- 
     PDEBUG("returning %zu", retval);
     return retval;
 }
