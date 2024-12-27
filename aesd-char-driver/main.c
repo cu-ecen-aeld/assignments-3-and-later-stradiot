@@ -56,24 +56,32 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
      */
     struct aesd_dev *dev = filp->private_data;
 
-	size_t unused;
+	size_t entry_offset;
+
+	if (mutex_lock_interruptible(&dev->lock)){
+		return -ERESTARTSYS;
+	}
 
 	struct aesd_buffer_entry* entry = aesd_circular_buffer_find_entry_offset_for_fpos(
 		&(dev->c_buffer),
 		*f_pos,
-		&unused
+		&entry_offset
 	);
 
+	mutex_unlock(&dev->lock);
+
 	if (entry != NULL){
-		PDEBUG("found message %s, size %zu, f_pos %lld", entry->buffptr, entry->size, *f_pos);
-		if (copy_to_user(buf, entry->buffptr, entry->size)){
+		size_t unread_bytes = entry->size - entry_offset;
+		size_t read_size = (unread_bytes > count) ? count : unread_bytes;
+
+		PDEBUG("Reading message %.*s of size %zu", read_size, entry->buffptr + entry_offset, read_size);
+		if (copy_to_user(buf, entry->buffptr + entry_offset, read_size)){
 			return -EINTR;
 		}
-		*f_pos += entry->size;
-		retval = entry->size;
+		*f_pos += read_size;
+		retval = read_size;
 	}
 
-	PDEBUG("end retval %zu", retval);
     return retval;
 }
 
@@ -87,8 +95,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
      */
     struct aesd_dev *dev = filp->private_data;
 
-    PDEBUG("init vals buffer %s size %zu",dev->c_buffer_entry.buffptr,dev->c_buffer_entry.size,*f_pos);
-
 	if (mutex_lock_interruptible(&dev->lock)){
 		return -ERESTARTSYS;
 	}
@@ -99,17 +105,18 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		GFP_KERNEL
 	);
 
-	copy_from_user(
+	if(copy_from_user(
 		dev->c_buffer_entry.buffptr + dev->c_buffer_entry.size,
 		buf,
 		count
-	);
+	)){
+		return -EINTR;
+	}
 	dev->c_buffer_entry.size += count;
-
-    PDEBUG("ACT buffer %s", dev->c_buffer_entry.buffptr);
 
 	if(strchr(dev->c_buffer_entry.buffptr, '\n') != NULL){
 		const char* deleted_item = aesd_circular_buffer_add_entry(&(dev->c_buffer), &(dev->c_buffer_entry)); 
+		PDEBUG("Added entry %s", dev->c_buffer_entry.buffptr);
 
 		if (deleted_item != NULL){
 			PDEBUG("Deleted entry %s", deleted_item);
@@ -117,14 +124,12 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		}	
 
 		memset(&dev->c_buffer_entry, 0, sizeof(struct aesd_buffer_entry));
-		PDEBUG("entry added");
 	}
 
 	retval = count;
 
 	mutex_unlock(&dev->lock);
 
-    PDEBUG("returning %zu", retval);
     return retval;
 }
 

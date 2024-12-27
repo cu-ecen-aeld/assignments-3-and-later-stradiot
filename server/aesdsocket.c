@@ -14,7 +14,15 @@
 #include <sys/queue.h>
 #include <stdbool.h>
 
-#define TMPFILE "/var/tmp/aesdsocketdata"
+#ifndef USE_AESD_CHAR_DEVICE
+    #define USE_AESD_CHAR_DEVICE (1)
+#endif
+
+#if (USE_AESD_CHAR_DEVICE == 0)
+	#define FILENAME "/var/tmp/aesdsocketdata"
+#else
+	#define FILENAME "/dev/aesdchar"
+#endif
 
 bool signal_caught = false;
 pthread_mutex_t lock;
@@ -42,6 +50,7 @@ static void signal_handler (int signal_number){
     }
 }
 
+#if (USE_AESD_CHAR_DEVICE == 0)
 struct timer_thread_data{
     pthread_mutex_t* mutex;
 
@@ -60,7 +69,7 @@ void timer_thread(union sigval timer_data){
 	info = localtime( &rawtime );
 	strftime(buffer, sizeof(buffer),"%F %T", info);
 
-	FILE* file = fopen(TMPFILE, "a");
+	FILE* file = fopen(FILENAME, "a");
 	if (file == NULL){
 		syslog(LOG_ERR, "Error opening file for append: %s\n", strerror(errno));
 		thread_args->thread_complete = true;
@@ -82,15 +91,15 @@ void timer_thread(union sigval timer_data){
 		thread_args->thread_complete_success = false;
 		return;
 	}
-	rc = pthread_mutex_unlock(thread_args->mutex);
-	if (rc != 0){
-		syslog(LOG_ERR, "Mutex unlock failed to lock with %d\n", rc);
+	if (fclose(file) == EOF){
+		syslog(LOG_ERR, "Error closing the file: %s\n", strerror(errno));
 		thread_args->thread_complete = true;
 		thread_args->thread_complete_success = false;
 		return;
 	}
-	if (fclose(file) == EOF){
-		syslog(LOG_ERR, "Error closing the file: %s\n", strerror(errno));
+	rc = pthread_mutex_unlock(thread_args->mutex);
+	if (rc != 0){
+		syslog(LOG_ERR, "Mutex unlock failed to lock with %d\n", rc);
 		thread_args->thread_complete = true;
 		thread_args->thread_complete_success = false;
 		return;
@@ -99,13 +108,14 @@ void timer_thread(union sigval timer_data){
 	thread_args->thread_complete = true;
 	thread_args->thread_complete_success = true;
 }
+#endif
 
 void* handle_conn(void* conn_data){
 	int rc;
 
     struct conn_thread_data* thread_args = (struct conn_thread_data *) conn_data;
 
-	FILE* file = fopen(TMPFILE, "a");
+	FILE* file = fopen(FILENAME, "a");
 	if (file == NULL){
 		syslog(LOG_ERR, "Error opening file for append: %s\n", strerror(errno));
 		thread_args->thread_complete = true;
@@ -158,7 +168,7 @@ void* handle_conn(void* conn_data){
 		return conn_data;
 	}
 
-	file = fopen(TMPFILE, "r");
+	file = fopen(FILENAME, "r");
 	if (file == NULL){
 		syslog(LOG_ERR, "Error opening the file for read: %s\n", strerror(errno));
 		thread_args->thread_complete = true;
@@ -256,6 +266,7 @@ int main(int argc, char const* argv[]){
 		exit(EXIT_FAILURE);
     }
 
+	#if (USE_AESD_CHAR_DEVICE == 0)
 	struct timer_thread_data timer_data = {
 		.mutex = &lock,
 		.thread_complete = false,
@@ -283,6 +294,7 @@ int main(int argc, char const* argv[]){
 		syslog(LOG_ERR, "Error starting timer: %s\n", strerror(errno));
 		exit(EXIT_FAILURE);
 	}
+	#endif
 
     while (!signal_caught){
         int sockfd_in; 
@@ -336,14 +348,17 @@ int main(int argc, char const* argv[]){
 		free(tmp);
 	}
 
+	#if (USE_AESD_CHAR_DEVICE == 0)
 	timer_delete(timer);
-	//pthread_join(timer_thread, NULL);
+	#endif
     pthread_mutex_destroy(&lock);
     close(sockfd);
     freeaddrinfo(servinfo);
     closelog();
 
-    remove(TMPFILE);
+	#if (USE_AESD_CHAR_DEVICE == 0)
+	remove(FILENAME);
+	#endif
 
     return 0;
 }
