@@ -12,7 +12,9 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/queue.h>
+#include <sys/ioctl.h>
 #include <stdbool.h>
+#include "aesd_ioctl.h"
 
 #ifndef USE_AESD_CHAR_DEVICE
     #define USE_AESD_CHAR_DEVICE (1)
@@ -115,17 +117,16 @@ void* handle_conn(void* conn_data){
 
     struct conn_thread_data* thread_args = (struct conn_thread_data *) conn_data;
 
-	FILE* file = fopen(FILENAME, "a");
-	if (file == NULL){
-		syslog(LOG_ERR, "Error opening file for append: %s\n", strerror(errno));
-		thread_args->thread_complete = true;
-		thread_args->thread_complete_success = false;
-		return conn_data;
-	}
-
-	char buffer[1024] = { 0 };
+    int total_bytes = 0;
+	int buffer_size = 1024;
+	char *buffer = (char*)malloc(buffer_size);
 	int bytes_received;
-	while ((bytes_received = recv(thread_args->sockfd_in, buffer, sizeof(buffer) - 1, 0)) > 0){
+
+	while ((bytes_received = recv(thread_args->sockfd_in, buffer + total_bytes, buffer_size - total_bytes - 1, 0)) > 0){
+		total_bytes += bytes_received;
+		buffer[total_bytes] = '\0';
+		syslog(LOG_DEBUG, "Received bytes: %s of size %d\n", buffer, total_bytes);
+
 		if (signal_caught){
 			thread_args->thread_complete = true;
 			return conn_data;
@@ -136,48 +137,66 @@ void* handle_conn(void* conn_data){
 			thread_args->thread_complete_success = false;
 			return conn_data;
 		}
-		rc = pthread_mutex_lock(thread_args->mutex); 
-		if (rc != 0){
-			syslog(LOG_ERR, "Mutex lock failed to lock with %d", rc);
-			thread_args->thread_complete = true;
-			thread_args->thread_complete_success = false;
-			return conn_data;
+		if(strchr(buffer ,'\n') != NULL){
+			syslog(LOG_DEBUG, "Newline found, breaking. Full message: %s", buffer);
+			break;
 		}
-		if (fwrite(buffer, sizeof(char), bytes_received, file) < 0){
+
+		buffer_size += bytes_received;
+		buffer = realloc(buffer, buffer_size);
+	}
+
+	FILE* file = fopen(FILENAME, "r+");
+	if (file == NULL){
+		syslog(LOG_ERR, "Error opening file for read/write: %s\n", strerror(errno));
+		thread_args->thread_complete = true;
+		thread_args->thread_complete_success = false;
+		return conn_data;
+	}
+
+	rc = pthread_mutex_lock(thread_args->mutex); 
+	if (rc != 0){
+		syslog(LOG_ERR, "Mutex lock failed to lock with %d", rc);
+		thread_args->thread_complete = true;
+		thread_args->thread_complete_success = false;
+		return conn_data;
+	}
+
+	if (strncmp(buffer, "AESDCHAR_IOCSEEKTO:", strlen("AESDCHAR_IOCSEEKTO:")) == 0) {
+		syslog(LOG_DEBUG, "IOCTL received %s", buffer);
+		unsigned int write_cmd, write_cmd_offset;
+		if (sscanf(buffer, "AESDCHAR_IOCSEEKTO:%u,%u", &write_cmd, &write_cmd_offset) == 2) {
+			struct aesd_seekto seekto;
+			seekto.write_cmd = write_cmd;
+			seekto.write_cmd_offset = write_cmd_offset;
+
+			ioctl(fileno(file), AESDCHAR_IOCSEEKTO, &seekto);
+		}
+	} else {
+		syslog(LOG_DEBUG, "Writing to file %s", buffer);
+		if (fwrite(buffer, sizeof(char), total_bytes, file) < 0){
 			syslog(LOG_ERR, "Error writing to file: %s\n", strerror(errno));
 			thread_args->thread_complete = true;
 			thread_args->thread_complete_success = false;
 			return conn_data;
 		}
-		rc = pthread_mutex_unlock(thread_args->mutex);
-		if (rc != 0){
-			syslog(LOG_ERR, "Mutex unlock failed to lock with %d", rc);
-			thread_args->thread_complete = true;
-			thread_args->thread_complete_success = false;
-			return conn_data;
-		}
-		if(strchr(buffer ,'\n') != NULL){
-			break;
-		}
+
+		fsync(fileno(file));
+		rewind(file);
 	}
 
-	if (fclose(file) == EOF){
-		syslog(LOG_ERR, "Error closing the file: %s\n", strerror(errno));
+	rc = pthread_mutex_unlock(thread_args->mutex);
+	if (rc != 0){
+		syslog(LOG_ERR, "Mutex unlock failed to unlock with %d", rc);
 		thread_args->thread_complete = true;
 		thread_args->thread_complete_success = false;
 		return conn_data;
 	}
 
-	file = fopen(FILENAME, "r");
-	if (file == NULL){
-		syslog(LOG_ERR, "Error opening the file for read: %s\n", strerror(errno));
-		thread_args->thread_complete = true;
-		thread_args->thread_complete_success = false;
-		return conn_data;
-	}
 	char buff[1024] = { 0 };
 	int bytes_read;
 	while((bytes_read = fread(buff, sizeof(char), sizeof(buff), file)) > 0){
+		syslog(LOG_DEBUG, "Rading from file: %s", buff);
 		if (send(thread_args->sockfd_in, buff, bytes_read, 0) < 0){
 			syslog(LOG_ERR, "Error sending data: %s\n", strerror(errno));
 			thread_args->thread_complete = true;
@@ -194,6 +213,8 @@ void* handle_conn(void* conn_data){
 
 	close(thread_args->sockfd_in);
 	syslog(LOG_INFO, "Closed connection from %s\n", inet_ntoa(thread_args->addr_client.sin_addr));
+
+	free(buffer);
 
 	thread_args->thread_complete = true;
 	thread_args->thread_complete_success = true;
